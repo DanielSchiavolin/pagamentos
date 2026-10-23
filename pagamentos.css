@@ -130,3 +130,9 @@
   .form-row { grid-template-columns: 1fr; gap: 0; }
   .pay-summary { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* export dialog */
+.export-hint { font-size: 0.85rem; color: rgba(255, 255, 255, 0.8); margin-bottom: 8px; }
+.export-preview { font-family: ui-monospace, Consolas, monospace; font-size: 0.78rem; line-height: 1.35; white-space: pre; resize: vertical; margin-bottom: 10px; }
+.export-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.export-buttons .btn-inline { flex: 1 1 160px; }

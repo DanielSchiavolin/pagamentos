@@ -6,7 +6,7 @@
 // ============================================================
 
 // Bump together with version.json on every deploy: open apps reload themselves when it changes
-const APP_VERSION = '2026-10-23.1';
+const APP_VERSION = '2026-10-23.2';
 
 const FIREBASE_CONFIG = {
   apiKey: 'AIzaSyB2XpLy5atMeLtc-XuOaAtY9m72mK9dZSY',
@@ -75,15 +75,24 @@ function esc(s) {
 function makeId(name) {
   return normalizeText(name).replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').slice(0, 30) + '_' + Date.now() + Math.floor(Math.random() * 1000);
 }
-// "1.234,56" / "150" / "150.5" → number
+// Brazilian money input → number: "1.500" = 1500, "1.800,50" = 1800.5, "150,5" = 150.5,
+// "150.50" = 150.5, "1,500.00" = 1500. The LAST separator followed by 1–2 digits is the decimal one.
 function parseMoney(v) {
   if (v === null || v === undefined) return 0;
-  if (typeof v === 'number') return v;
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * 100) / 100 : 0;
   let s = String(v).replace(/[R$\s]/g, '');
-  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
-  const n = Number(s);
-  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+  const neg = s.startsWith('-');
+  s = s.replace(/[^0-9.,]/g, '');
+  if (!s) return 0;
+  const m = s.match(/^(.*)[.,](\d{1,2})$/);
+  const intPart = (m ? m[1] : s).replace(/[.,]/g, '');
+  const n = Number(`${intPart || '0'}.${m ? m[2] : '0'}`);
+  if (!Number.isFinite(n)) return 0;
+  return (neg ? -1 : 1) * Math.round(n * 100) / 100;
 }
+
+// Sums in integer cents (no floating point residue like 299,9999…)
+function cents(v) { return Math.round(parseMoney(v) * 100); }
 function brl(n) {
   return (n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
@@ -106,7 +115,15 @@ function postShifts(post, date) {
 }
 
 function entryTotal(e) {
-  return parseMoney(e.valor) + parseMoney(e.extra) - parseMoney(e.desconto) + (e.dobra ? parseMoney(e.tresSeis) : 0);
+  return (cents(e.valor) + cents(e.extra) - cents(e.desconto) + (e.dobra ? cents(e.tresSeis) : 0)) / 100;
+}
+
+// Fixed salaries in force in a month: the latest list saved for that month or before
+// (editing in a month applies from that month on and never rewrites past months)
+function fixosOf(post, ym) {
+  const hist = post.fixosHist || {};
+  const key = Object.keys(hist).filter(k => k <= ym).sort().pop();
+  return key ? (hist[key] || []) : [];
 }
 
 // ============================================================
@@ -122,34 +139,65 @@ class Ledger {
   }
 
   // Month summary of a post (+ per QRA)
-  postSummary(post, ym) {
-    const list = this.entriesOf(post.id, ym);
-    const sum = { turnos: list.length, dias: new Set(list.map(e => e.date)).size, valor: 0, extra: 0, desconto: 0, tresSeis: 0, dobras: 0, total: 0, fixos: 0, qras: {} };
-    list.forEach(e => {
-      const v = parseMoney(e.valor), x = parseMoney(e.extra), d = parseMoney(e.desconto), t = e.dobra ? parseMoney(e.tresSeis) : 0;
-      sum.valor += v; sum.extra += x; sum.desconto += d; sum.tresSeis += t; if (e.dobra) sum.dobras++;
-      const key = normalizeText(e.qra) || '?';
-      const q = sum.qras[key] = sum.qras[key] || { nome: e.qra || '(sem nome)', turnos: 0, dias: new Set(), valor: 0, extra: 0, desconto: 0, tresSeis: 0, dobras: 0, total: 0 };
-      q.turnos++; q.dias.add(e.date); q.valor += v; q.extra += x; q.desconto += d; q.tresSeis += t; if (e.dobra) q.dobras++;
-      q.total += v + x - d + t;
-    });
-    if (post.tipo === 'fixo') sum.fixos = (post.fixos || []).reduce((a, f) => a + parseMoney(f.salario), 0);
-    sum.total = sum.valor + sum.extra - sum.desconto + sum.tresSeis + sum.fixos;
-    return sum;
+  // Accumulate one entry into a totals bucket (all money kept in integer cents)
+  static add(b, e) {
+    const v = cents(e.valor), x = cents(e.extra), d = cents(e.desconto), t = e.dobra ? cents(e.tresSeis) : 0;
+    b.turnos++; b.dias.add(e.date); b.valor += v; b.extra += x; b.desconto += d; b.tresSeis += t; if (e.dobra) b.dobras++;
+    b.total += v + x - d + t;
   }
 
-  // All QRAs in a month across posts
+  static bucket(nome) {
+    return { nome, turnos: 0, dias: new Set(), valor: 0, extra: 0, desconto: 0, tresSeis: 0, dobras: 0, total: 0, postos: new Set(), fixo: 0 };
+  }
+
+  static toReais(b) {
+    ['valor', 'extra', 'desconto', 'tresSeis', 'total', 'fixo', 'fixos'].forEach(k => { if (typeof b[k] === 'number') b[k] /= 100; });
+    return b;
+  }
+
+  // Month summary of a post (+ per QRA)
+  postSummary(post, ym) {
+    const list = this.entriesOf(post.id, ym);
+    const sum = Ledger.bucket(post.name);
+    sum.fixos = 0;
+    sum.qras = {};
+    list.forEach(e => {
+      Ledger.add(sum, e);
+      const key = normalizeText(e.qra) || '?';
+      Ledger.add(sum.qras[key] = sum.qras[key] || Ledger.bucket(e.qra || '(sem nome)'), e);
+    });
+    if (post.tipo === 'fixo') sum.fixos = fixosOf(post, ym).reduce((a, f) => a + cents(f.salario), 0);
+    sum.total += sum.fixos;
+    sum.dias = sum.dias.size;
+    Object.values(sum.qras).forEach(Ledger.toReais);
+    return Ledger.toReais(sum);
+  }
+
+  // Everyone paid in a month across posts (QRAs by shift + fixed limpeza staff).
+  // Launches of posts that no longer exist are ignored, so this always matches the posts' totals.
   qraSummary(ym) {
     const out = {};
-    Object.values(this.entries).filter(e => monthOf(e.date) === ym).forEach(e => {
+    Object.values(this.entries).filter(e => monthOf(e.date) === ym && this.posts[e.postId]).forEach(e => {
       const key = normalizeText(e.qra) || '?';
-      const q = out[key] = out[key] || { nome: e.qra || '(sem nome)', turnos: 0, dias: new Set(), valor: 0, extra: 0, desconto: 0, tresSeis: 0, dobras: 0, total: 0, postos: new Set() };
-      const v = parseMoney(e.valor), x = parseMoney(e.extra), d = parseMoney(e.desconto), t = e.dobra ? parseMoney(e.tresSeis) : 0;
-      q.turnos++; q.dias.add(e.date); q.valor += v; q.extra += x; q.desconto += d; q.tresSeis += t; if (e.dobra) q.dobras++;
-      q.total += v + x - d + t;
-      if (this.posts[e.postId]) q.postos.add(this.posts[e.postId].name);
+      const q = out[key] = out[key] || Ledger.bucket(e.qra || '(sem nome)');
+      Ledger.add(q, e);
+      q.postos.add(this.posts[e.postId].name);
     });
+    Object.values(this.posts).filter(p => p.tipo === 'fixo').forEach(p => fixosOf(p, ym).forEach(f => {
+      const key = normalizeText(f.nome) || '?';
+      const q = out[key] = out[key] || Ledger.bucket(f.nome);
+      q.fixo += cents(f.salario); q.total += cents(f.salario);
+      q.postos.add(p.name);
+    }));
+    Object.values(out).forEach(Ledger.toReais);
     return out;
+  }
+
+  // Same QRA already working the SAME shift in another launch (two places at once)
+  sameShiftElsewhere(qraName, date, turno, excludeId) {
+    const n = normalizeText(qraName);
+    if (!n) return [];
+    return Object.values(this.entries).filter(e => e.id !== excludeId && normalizeText(e.qra) === n && e.date === date && e.turno === turno && this.posts[e.postId]);
   }
 
   // Same QRA in the shift right before/after (any post) → it is a dobra
@@ -222,10 +270,12 @@ class PagamentosApp {
         data[p.id] = { id: p.id, name: p.name, category: p.category, escalaType: p.escalaType, days: p.days || null, hibridoSchedule: p.hibridoSchedule || null, tipo: 'diaria', valorTurno: 0 };
       });
       LIMPEZA_POSTS.forEach(l => {
-        const id = makeId(`limpeza_${l.name}`);
-        data[id] = { id, name: l.name, category: 'Limpeza', escalaType: l.escalaType, tipo: 'fixo', valorTurno: 0, fixos: [] };
+        // fixed ids: two phones opening the app for the first time create the SAME posts
+        const id = `limpeza_${normalizeText(l.name).replace(/[^a-z0-9]/g, '_')}`;
+        data[id] = { id, name: l.name, category: 'Limpeza', escalaType: l.escalaType, tipo: 'fixo', valorTurno: 0 };
       });
-      await this.db.ref('pagamentos/posts').set(data);
+      // only fill what is missing (a transaction would also work; update never deletes)
+      await this.db.ref('pagamentos/posts').update(data);
       this.showToast('🏢 Postos criados a partir do app Coberturas', 'success');
     } catch (e) {
       console.warn('seed', e);
@@ -285,7 +335,7 @@ class PagamentosApp {
     let groups = this.postsByCategory();
     if (query) {
       groups = groups.map(([cat, posts]) => [cat, posts.filter(p => {
-        const names = this.ledger.entriesOf(p.id, this.month).map(e => e.qra).concat((p.fixos || []).map(f => f.nome));
+        const names = this.ledger.entriesOf(p.id, this.month).map(e => e.qra).concat(fixosOf(p, this.month).map(f => f.nome));
         return normalizeText([p.name, cat, ...names].join(' ')).includes(query);
       })]).filter(([, posts]) => posts.length);
     }
@@ -318,7 +368,7 @@ class PagamentosApp {
           <span class="post-type-badge ${fixo ? 'limpeza' : 'badge-24h'}">${fixo ? 'Salário fixo' : `Turno ${p.valorTurno ? brl(p.valorTurno) : '—'}`}</span>
         </div>
         <div class="pay-lines">
-          ${fixo ? `<div class="pay-line"><span>🧾 Fixos (${(p.fixos || []).length})</span><strong>${brl(sum.fixos)}</strong></div>` : ''}
+          ${fixo ? `<div class="pay-line"><span>🧾 Fixos (${fixosOf(p, this.month).length})</span><strong>${brl(sum.fixos)}</strong></div>` : ''}
           <div class="pay-line"><span>${fixo ? '🔁 Coberturas' : '📅 Turnos'}: ${sum.turnos} · ${sum.dias} dia(s)</span><strong>${brl(sum.valor)}</strong></div>
           ${sum.extra ? `<div class="pay-line"><span>⏱️ Hora extra</span><strong class="plus">+ ${brl(sum.extra)}</strong></div>` : ''}
           ${sum.desconto ? `<div class="pay-line"><span>⚠️ Descontos</span><strong class="minus">− ${brl(sum.desconto)}</strong></div>` : ''}
@@ -361,11 +411,11 @@ class PagamentosApp {
       </button>`;
 
     if (p.tipo === 'fixo') {
-      const fixos = (p.fixos || []);
+      const fixos = fixosOf(p, this.month);
       body.innerHTML = `
         <h3 class="pay-section">🧾 Salário fixo</h3>
         ${fixos.length ? `<div class="pay-fixos">${fixos.map(f => `<div class="pay-line"><span class="pay-name">${esc(f.nome)}</span><strong>${brl(parseMoney(f.salario))}</strong></div>`).join('')}</div>`
-          : '<div class="muted-text">Nenhum funcionário fixo cadastrado. Use "✏️ Editar posto".</div>'}
+          : `<div class="muted-text">Nenhum funcionário fixo em ${monthLabel(this.month)}. Use "✏️ Editar posto".</div>`}
         <h3 class="pay-section">🔁 Coberturas no mês</h3>
         <button class="slot-add slot-add-custom" onclick="app.showEntryModal({ postId: '${p.id}', date: '${this.defaultDate()}', turno: 'diurno' })">+ lançar cobertura</button>
         <div class="pay-cob-list">${entries.length ? entries.map(e => `<div class="pay-day"><span class="pay-day-label">${dayLabel(e.date)} ${SHIFT_LABEL[e.turno].split(' ')[0]}</span>${cell(e)}</div>`).join('') : '<div class="muted-text">Nenhuma cobertura lançada.</div>'}</div>`;
@@ -383,7 +433,8 @@ class PagamentosApp {
           ${list.length ? '' : `<button class="pay-cell empty" onclick="app.showEntryModal({ postId: '${p.id}', date: '${date}', turno: '${shift}' })">+ lançar</button>`}
         </div>`;
       }).join('');
-      const extra = `<button class="pay-more" title="Lançamento extra neste dia" onclick="app.showEntryModal({ postId: '${p.id}', date: '${date}', turno: 'diurno' })">＋</button>`;
+      const firstShift = postShifts(p, date)[0] || (p.escalaType === 'noturno' ? 'noturno' : 'diurno');
+      const extra = `<button class="pay-more" title="Lançamento extra neste dia" onclick="app.showEntryModal({ postId: '${p.id}', date: '${date}', turno: '${firstShift}' })">＋</button>`;
       return `<div class="pay-day${cells ? '' : ' closed'}"><span class="pay-day-label">${dayLabel(date)}</span><div class="pay-slots">${cells || '<span class="muted-text">posto fechado</span>'}</div>${extra}</div>`;
     }).join('');
     body.innerHTML = `<div class="pay-days">${rows}</div>`;
@@ -436,13 +487,13 @@ class PagamentosApp {
     const dobraBox = document.getElementById('entry-dobra');
     if (near.length && !skipAutoCheck) dobraBox.checked = true;
     const hint = document.getElementById('entry-dobra-hint');
-    if (near.length) {
-      hint.className = 'info-box visible';
-      hint.innerHTML = `<div class="check-warn">🔁 ${esc(qra)} também trabalhou ${near.map(n => `${dayLabel(n.date)} ${SHIFT_LABEL[n.turno]} em ${esc((this.ledger.posts[n.postId] || { name: '?' }).name)}`).join(' e ')} — é dobra.</div>`;
-    } else {
-      hint.className = 'info-box';
-      hint.innerHTML = '';
-    }
+    const clash = date ? this.ledger.sameShiftElsewhere(qra, date, turno, id) : [];
+    const postName = x => esc((this.ledger.posts[x.postId] || { name: '?' }).name);
+    const lines = [];
+    if (clash.length) lines.push(`<div class="check-conflict">⛔ ${esc(qra)} já está lançado no MESMO turno (${dayLabel(date)} ${SHIFT_LABEL[turno]}) em ${clash.map(postName).join(', ')}.</div>`);
+    if (near.length) lines.push(`<div class="check-warn">🔁 ${esc(qra)} também trabalhou ${near.map(n => `${dayLabel(n.date)} ${SHIFT_LABEL[n.turno]} em ${postName(n)}`).join(' e ')} — é dobra.</div>`);
+    hint.className = lines.length ? 'info-box visible' : 'info-box';
+    hint.innerHTML = lines.join('');
     document.getElementById('entry-36-group').style.display = dobraBox.checked ? '' : 'none';
     const e = {
       valor: document.getElementById('entry-valor').value, extra: document.getElementById('entry-extra').value,
@@ -451,14 +502,24 @@ class PagamentosApp {
     document.getElementById('entry-total').textContent = `Total: ${brl(entryTotal(e))}`;
   }
 
-  async saveEntry() {
+  async saveEntry(confirmed) {
     const id = document.getElementById('entry-id').value || makeId('lanc');
     const postId = document.getElementById('entry-post').value;
     const date = document.getElementById('entry-date').value;
     const qra = document.getElementById('entry-qra').value.trim();
     if (!date) return this.showToast('Informe o dia', 'error');
     if (!qra) return this.showToast('Informe o QRA que trabalhou', 'error');
+    const money = ['entry-valor', 'entry-extra', 'entry-desconto', 'entry-36'].map(f => parseMoney(document.getElementById(f).value));
+    if (money.some(v => v < 0)) return this.showToast('Os valores não podem ser negativos (o atraso já entra como desconto)', 'error');
     const dobra = document.getElementById('entry-dobra').checked;
+    const preview = { valor: money[0], extra: money[1], desconto: money[2], dobra, tresSeis: money[3] };
+    if (!confirmed) {
+      const clash = this.ledger.sameShiftElsewhere(qra, date, document.getElementById('entry-turno').value, document.getElementById('entry-id').value);
+      const problems = [];
+      if (clash.length) problems.push(`${qra} já está lançado no mesmo turno em ${clash.map(c => (this.ledger.posts[c.postId] || { name: '?' }).name).join(', ')}`);
+      if (entryTotal(preview) < 0) problems.push(`o total do lançamento fica negativo (${brl(entryTotal(preview))})`);
+      if (problems.length) return this.confirm(`Atenção: ${problems.join(' e ')}. Salvar mesmo assim?`, () => this.saveEntry(true));
+    }
     const entry = {
       id, postId, date, turno: document.getElementById('entry-turno').value, qra,
       valor: parseMoney(document.getElementById('entry-valor').value),
@@ -493,7 +554,8 @@ class PagamentosApp {
     document.getElementById('ep-escala').value = p ? (p.escalaType || '24h') : '24h';
     document.getElementById('ep-tipo').value = p ? (p.tipo || 'diaria') : 'diaria';
     document.getElementById('ep-valor').value = moneyInput(p ? parseMoney(p.valorTurno) : 0);
-    document.getElementById('ep-fixos').value = p && p.fixos ? p.fixos.map(f => `${f.nome} ; ${moneyInput(parseMoney(f.salario))}`).join('\n') : '';
+    document.getElementById('ep-fixos').value = p ? fixosOf(p, this.month).map(f => `${f.nome} ; ${moneyInput(parseMoney(f.salario))}`).join('\n') : '';
+    document.getElementById('ep-fixos-label').textContent = `Funcionários fixos — valem a partir de ${monthLabel(this.month)} (um por linha: Nome ; salário)`;
     document.getElementById('category-names').innerHTML = [...new Set([...CATEGORY_ORDER, ...Object.values(this.ledger.posts).map(x => x.category)])]
       .map(c => `<option value="${esc(c)}"></option>`).join('');
     document.getElementById('ep-delete').style.display = p ? '' : 'none';
@@ -516,12 +578,20 @@ class PagamentosApp {
       const [nome, sal] = l.split(';');
       return { nome: (nome || '').trim(), salario: parseMoney(sal) };
     }).filter(f => f.nome);
+    if (fixos.some(f => f.salario < 0)) return this.showToast('Salário não pode ser negativo', 'error');
+    const hist = { ...((old && old.fixosHist) || {}) };
+    if (tipo === 'fixo') {
+      // saved for the selected month; later months keep their own list if they already have one
+      const before = old ? JSON.stringify(fixosOf(old, this.month)) : '[]';
+      if (JSON.stringify(fixos) !== before) hist[this.month] = fixos;
+    }
     const post = {
       ...(old || {}), id, name,
       category: document.getElementById('ep-category').value.trim() || (tipo === 'fixo' ? 'Limpeza' : 'Outros'),
       escalaType: document.getElementById('ep-escala').value,
       tipo, valorTurno: parseMoney(document.getElementById('ep-valor').value),
-      fixos: tipo === 'fixo' ? fixos : null,
+      fixos: null,
+      fixosHist: tipo === 'fixo' ? hist : null,
     };
     this.hideModal('edit-post-modal');
     await this.write(this.db.ref(`pagamentos/posts/${id}`).set(post), `Posto ${name} salvo`);
@@ -556,7 +626,7 @@ class PagamentosApp {
         <div class="qra-main">
           <div class="qra-name">${esc(q.nome)}</div>
           <div class="qra-meta">🏢 ${esc([...q.postos].join(' · '))}</div>
-          <div class="qra-next">📅 ${q.turnos} turno(s) · ${q.dias.size} dia(s) · 💵 ${brl(q.valor)}${q.extra ? ` · ⏱️ +${brl(q.extra)}` : ''}${q.desconto ? ` · ⚠️ −${brl(q.desconto)}` : ''}${q.tresSeis ? ` · 🔁 3/6 +${brl(q.tresSeis)}` : ''}</div>
+          <div class="qra-next">${q.turnos ? `📅 ${q.turnos} turno(s) · ${q.dias.size} dia(s) · 💵 ${brl(q.valor)}` : ''}${q.fixo ? `${q.turnos ? ' · ' : ''}🧾 fixo ${brl(q.fixo)}` : ''}${q.extra ? ` · ⏱️ +${brl(q.extra)}` : ''}${q.desconto ? ` · ⚠️ −${brl(q.desconto)}` : ''}${q.tresSeis ? ` · 🔁 3/6 +${brl(q.tresSeis)}` : ''}</div>
         </div>
         <div class="qra-total">${brl(q.total)}</div>
       </div>`).join('');
@@ -570,7 +640,7 @@ class PagamentosApp {
     lines.push(`🏢 *${p.name}* (${p.category})`);
     if (p.tipo === 'fixo') {
       lines.push(`🧾 Salário fixo: ${brl(s.fixos)}`);
-      (p.fixos || []).forEach(f => lines.push(`   • ${f.nome}: ${brl(parseMoney(f.salario))}`));
+      fixosOf(p, ym).forEach(f => lines.push(`   • ${f.nome}: ${brl(parseMoney(f.salario))}`));
       lines.push(`🔁 Coberturas: ${s.turnos} (${s.dias} dia(s)) · ${brl(s.valor)}`);
     } else {
       lines.push(`📅 Dias do posto: ${s.dias} · Turnos: ${s.turnos} · Valor: ${brl(s.valor)}`);
@@ -604,7 +674,8 @@ class PagamentosApp {
     msg += posts.map(p => this.postBlock(p, ym)).join('\n\n') + '\n\n━━━━━━━━━━━━━━━━━━━━━\n';
     const tot = posts.reduce((a, p) => {
       const s = this.ledger.postSummary(p, ym);
-      ['turnos', 'valor', 'extra', 'desconto', 'tresSeis', 'fixos', 'total', 'dobras'].forEach(k => { a[k] += s[k]; });
+      ['turnos', 'dobras'].forEach(k => { a[k] += s[k]; });
+      ['valor', 'extra', 'desconto', 'tresSeis', 'fixos', 'total'].forEach(k => { a[k] = (cents(a[k]) + cents(s[k])) / 100; });
       return a;
     }, { turnos: 0, valor: 0, extra: 0, desconto: 0, tresSeis: 0, fixos: 0, total: 0, dobras: 0 });
     const qras = Object.values(this.ledger.qraSummary(ym)).sort((a, b) => b.total - a.total);
@@ -612,24 +683,81 @@ class PagamentosApp {
     msg += `📅 Turnos: ${tot.turnos} · Valor: ${brl(tot.valor)}\n`;
     if (tot.fixos) msg += `🧾 Salários fixos: ${brl(tot.fixos)}\n`;
     msg += `⏱️ Hora extra: ${brl(tot.extra)}\n⚠️ Descontos: ${brl(tot.desconto)}\n🔁 3/6: ${brl(tot.tresSeis)} (${tot.dobras} dobra(s))\n`;
-    msg += `👥 QRAs: ${qras.length}\n✅ *TOTAL: ${brl(tot.total)}*`;
+    msg += `👥 Pessoas: ${qras.length}\n✅ *TOTAL: ${brl(tot.total)}*`;
     if (qras.length) {
-      msg += `\n\n👥 *POR QRA (todos os postos):*\n` + qras.map(q => `   • ${q.nome}: ${q.dias.size} dia(s), ${q.turnos} turno(s) → ${brl(q.total)}`).join('\n');
+      msg += `\n\n👥 *POR PESSOA (todos os postos):*\n` + qras.map(q => {
+        const parts = [];
+        if (q.turnos) parts.push(`${q.dias.size} dia(s), ${q.turnos} turno(s)`);
+        if (q.fixo) parts.push(`fixo ${brl(q.fixo)}`);
+        return `   • ${q.nome}: ${parts.join(' + ')} → ${brl(q.total)}`;
+      }).join('\n');
     }
     return msg;
   }
 
-  sendWhatsApp(text) {
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  // Long reports do not fit in a WhatsApp link: show the text with Copiar / Compartilhar and, when
+  // needed, split it into parts (each one opens WhatsApp with a message of a safe size)
+  sendWhatsApp(text, title) {
+    const MAX = 3000; // characters per WhatsApp message
+    const parts = [];
+    let cur = '';
+    // blocks bigger than one message are cut by lines
+    const blocks = text.split('\n\n').flatMap(block => {
+      if (block.length <= MAX) return [block];
+      const out = [];
+      let piece = '';
+      block.split('\n').forEach(line => {
+        if (piece && piece.length + line.length + 1 > MAX) { out.push(piece); piece = ''; }
+        piece = piece ? `${piece}\n${line}` : line;
+      });
+      if (piece) out.push(piece);
+      return out;
+    });
+    blocks.forEach(block => {
+      if (cur && (cur.length + block.length + 2) > MAX) { parts.push(cur); cur = ''; }
+      cur = cur ? `${cur}\n\n${block}` : block;
+    });
+    if (cur) parts.push(cur);
+    this.exportText = text;
+    this.exportParts = parts.length > 1 ? parts.map((t, i) => `(${i + 1}/${parts.length})\n${t}`) : parts;
+    document.getElementById('export-title').textContent = title || '📱 Exportar';
+    document.getElementById('export-preview').value = text;
+    document.getElementById('export-info').textContent = this.exportParts.length > 1
+      ? `Relatório grande: vai em ${this.exportParts.length} mensagens no WhatsApp (ou copie/compartilhe tudo de uma vez).`
+      : `${text.length} caracteres.`;
+    document.getElementById('export-parts').innerHTML = this.exportParts.map((_, i) =>
+      `<button class="btn-primary btn-inline btn-whatsapp" onclick="app.openWhatsAppPart(${i})">📱 WhatsApp${this.exportParts.length > 1 ? ` — parte ${i + 1}/${this.exportParts.length}` : ''}</button>`).join('');
+    document.getElementById('export-share').style.display = navigator.share ? '' : 'none';
+    this.showModal('export-modal');
+  }
+
+  openWhatsAppPart(i) {
+    window.open(`https://wa.me/?text=${encodeURIComponent(this.exportParts[i])}`, '_blank');
+  }
+
+  async copyExport() {
+    try {
+      await navigator.clipboard.writeText(this.exportText);
+      this.showToast('📋 Texto copiado — cole no WhatsApp', 'success');
+    } catch (e) {
+      const ta = document.getElementById('export-preview');
+      ta.select();
+      document.execCommand('copy');
+      this.showToast('📋 Texto copiado', 'success');
+    }
+  }
+
+  async shareExport() {
+    try { await navigator.share({ text: this.exportText }); } catch (e) { /* cancelled */ }
   }
 
   exportPost(postId) {
     if (!this.ledger.posts[postId]) return;
-    this.sendWhatsApp(this.buildPostMessage(postId, this.month));
+    this.sendWhatsApp(this.buildPostMessage(postId, this.month), `📱 ${this.ledger.posts[postId].name} · ${monthLabel(this.month)}`);
   }
 
   exportAll() {
-    this.sendWhatsApp(this.buildGeneralMessage(this.month));
+    this.sendWhatsApp(this.buildGeneralMessage(this.month), `📱 Geral · ${monthLabel(this.month)}`);
   }
 
   // ===== auto update =====
@@ -693,6 +821,8 @@ class PagamentosApp {
     on('ep-save', 'click', () => this.savePost());
     on('ep-delete', 'click', () => this.deletePost());
     on('entry-save', 'click', () => this.saveEntry());
+    on('export-copy', 'click', () => this.copyExport());
+    on('export-share', 'click', () => this.shareExport());
     on('entry-delete', 'click', () => this.deleteEntry());
     ['entry-qra', 'entry-date', 'entry-turno'].forEach(id => on(id, 'change', () => this.updateEntryForm(false)));
     ['entry-valor', 'entry-extra', 'entry-desconto', 'entry-36'].forEach(id => on(id, 'input', () => this.updateEntryForm(true)));
@@ -701,7 +831,7 @@ class PagamentosApp {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { Ledger, parseMoney, brl, entryTotal, monthDates, shiftMonth, postShifts };
+  module.exports = { Ledger, parseMoney, brl, entryTotal, monthDates, shiftMonth, postShifts, fixosOf };
 } else {
   const app = new PagamentosApp();
   window.app = app;

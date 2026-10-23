@@ -190,13 +190,28 @@
                 <input type="text" id="ep-valor" class="form-input money" inputmode="decimal" placeholder="0,00">
             </div>
             <div class="form-group" id="ep-fixos-group">
-                <label class="form-label" for="ep-fixos">Funcionários fixos (um por linha: Nome ; salário)</label>
+                <label class="form-label" for="ep-fixos" id="ep-fixos-label">Funcionários fixos (um por linha: Nome ; salário)</label>
                 <textarea id="ep-fixos" class="form-input" rows="4" placeholder="Neide ; 1800,00&#10;Nay ; 1800,00"></textarea>
             </div>
             <div class="entry-actions">
                 <button id="ep-delete" class="btn-danger btn-inline">🗑️ Excluir posto</button>
                 <button id="ep-save" class="btn-primary btn-inline">✅ Salvar posto</button>
             </div>
+        </div>
+    </div>
+
+    <!-- ===== EXPORT ===== -->
+    <div id="export-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close" data-close="export-modal" aria-label="Fechar">✕</button>
+            <h2 id="export-title" class="modal-title">📱 Exportar</h2>
+            <div id="export-info" class="export-hint"></div>
+            <textarea id="export-preview" class="form-input export-preview" rows="10" readonly></textarea>
+            <div class="export-buttons">
+                <button id="export-copy" class="btn-primary btn-inline">📋 Copiar texto</button>
+                <button id="export-share" class="btn-primary btn-inline btn-cover">📤 Compartilhar</button>
+            </div>
+            <div id="export-parts" class="export-buttons"></div>
         </div>
     </div>
 
