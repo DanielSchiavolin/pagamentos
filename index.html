@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Front Security - Pagamentos</title>
+    <meta name="description" content="Lançamento e fechamento mensal de pagamentos por posto da Front Security.">
+    <meta name="theme-color" content="#1B2A4A">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="pagamentos.css">
+</head>
+<body>
+
+    <header id="app-header">
+        <div class="header-brand">
+            <svg class="header-logo" viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="25" r="18" stroke="#F5A623" stroke-width="4" fill="none"/>
+                <circle cx="20" cy="25" r="10" fill="#1B2A4A" stroke="#1B2A4A" stroke-width="3"/>
+                <circle cx="20" cy="25" r="3" fill="#FFFFFF"/>
+                <circle cx="32" cy="10" r="4" fill="#F5A623"/>
+                <path d="M35 15 L35 40 L45 40" stroke="#1B2A4A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                <path d="M35 15 L35 28 L44 28" stroke="#1B2A4A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                <path d="M8 8 A20 20 0 0 1 32 8" stroke="#1B2A4A" stroke-width="4" stroke-linecap="round" fill="none"/>
+            </svg>
+            <div class="header-text">
+                <h1 class="header-title">FRONT SECURITY</h1>
+                <span class="header-subtitle">Pagamentos</span>
+            </div>
+        </div>
+        <div class="header-info">
+            <div class="header-connection">
+                <span id="connection-status" class="conn-dot disconnected"></span>
+                <span id="connection-text" class="conn-text">Offline</span>
+            </div>
+            <span id="month-total" class="pending-badge all-clear">R$ 0,00</span>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <div class="month-bar">
+            <button class="month-nav" id="month-prev" aria-label="Mês anterior">‹</button>
+            <div class="month-label" id="month-label">--</div>
+            <button class="month-nav" id="month-next" aria-label="Próximo mês">›</button>
+            <button class="month-quick" id="month-current">Mês atual</button>
+        </div>
+
+        <nav class="view-tabs" role="tablist">
+            <button class="view-tab active" data-view="postos" role="tab">🏢 Postos</button>
+            <button class="view-tab" data-view="qras" role="tab">👥 QRAs <span id="qra-count" class="tab-count"></span></button>
+        </nav>
+
+        <section id="view-postos" class="view active">
+            <div class="toolbar">
+                <input type="search" id="post-search" class="form-input" placeholder="🔎 Buscar posto ou QRA...">
+            </div>
+            <div id="posts-container">
+                <div class="loading-state">
+                    <div class="loading-spinner"></div>
+                    <p>Conectando ao servidor...</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="view-qras" class="view">
+            <div class="toolbar">
+                <input type="search" id="qra-search" class="form-input" placeholder="🔎 Buscar QRA...">
+            </div>
+            <div id="qra-list"></div>
+        </section>
+    </main>
+
+    <div class="fab-container">
+        <button id="add-post-btn" class="fab fab-add" data-tooltip="Adicionar posto" aria-label="Adicionar posto">➕</button>
+        <button id="export-all-btn" class="fab fab-whatsapp" data-tooltip="Exportar geral (WhatsApp)" aria-label="Exportar geral">📱</button>
+    </div>
+
+    <!-- ===== MONTH OF A POST ===== -->
+    <div id="post-modal" class="modal-overlay">
+        <div class="modal-content modal-wide">
+            <button class="modal-close" data-close="post-modal" aria-label="Fechar">✕</button>
+            <h2 id="post-modal-title" class="modal-title">Posto</h2>
+            <div id="post-modal-summary" class="pay-summary"></div>
+            <div class="post-modal-actions">
+                <button id="post-export-btn" class="btn-primary btn-inline btn-whatsapp">📱 Exportar este posto</button>
+                <button id="post-edit-btn" class="btn-mini">✏️ Editar posto</button>
+            </div>
+            <div id="post-modal-body"></div>
+        </div>
+    </div>
+
+    <!-- ===== LANÇAMENTO ===== -->
+    <div id="entry-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close" data-close="entry-modal" aria-label="Fechar">✕</button>
+            <h2 id="entry-modal-title" class="modal-title">Lançamento</h2>
+            <input type="hidden" id="entry-id">
+            <input type="hidden" id="entry-post">
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="entry-date">Dia</label>
+                    <input type="date" id="entry-date" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="entry-turno">Turno</label>
+                    <select id="entry-turno" class="form-select">
+                        <option value="diurno">☀️ Diurno</option>
+                        <option value="noturno">🌙 Noturno</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="entry-qra">QRA que trabalhou</label>
+                <input type="text" id="entry-qra" class="form-input" list="qra-names" placeholder="Nome do QRA" autocomplete="off">
+                <datalist id="qra-names"></datalist>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="entry-valor">Valor do turno (R$)</label>
+                    <input type="text" id="entry-valor" class="form-input money" inputmode="decimal" placeholder="0,00">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="entry-extra">Hora extra (R$)</label>
+                    <input type="text" id="entry-extra" class="form-input money" inputmode="decimal" placeholder="0,00">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="entry-desconto">Atraso / desconto (R$)</label>
+                    <input type="text" id="entry-desconto" class="form-input money" inputmode="decimal" placeholder="0,00">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="entry-obs">Observação</label>
+                    <input type="text" id="entry-obs" class="form-input" placeholder="Ex: chegou 1h atrasado">
+                </div>
+            </div>
+            <div class="dobra-box">
+                <label class="check-line"><input type="checkbox" id="entry-dobra"> 🔁 Dobra (trabalhou turno colado)</label>
+                <div class="form-group" id="entry-36-group">
+                    <label class="form-label" for="entry-36">3/6 — extra pela dobra (R$)</label>
+                    <input type="text" id="entry-36" class="form-input money" inputmode="decimal" placeholder="0,00">
+                </div>
+                <div id="entry-dobra-hint" class="info-box"></div>
+            </div>
+            <div id="entry-total" class="entry-total">Total: R$ 0,00</div>
+            <div class="entry-actions">
+                <button id="entry-delete" class="btn-danger btn-inline">🗑️ Excluir</button>
+                <button id="entry-save" class="btn-primary btn-inline">✅ Salvar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== POSTO (add / edit) ===== -->
+    <div id="edit-post-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close" data-close="edit-post-modal" aria-label="Fechar">✕</button>
+            <h2 id="edit-post-title" class="modal-title">Posto</h2>
+            <input type="hidden" id="ep-id">
+            <div class="form-group">
+                <label class="form-label" for="ep-name">Nome do posto</label>
+                <input type="text" id="ep-name" class="form-input" placeholder="Ex: Marechal">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="ep-category">Categoria</label>
+                    <input type="text" id="ep-category" class="form-input" list="category-names" placeholder="Ex: Segurança Econ">
+                    <datalist id="category-names"></datalist>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="ep-escala">Turnos do posto</label>
+                    <select id="ep-escala" class="form-select">
+                        <option value="24h">🔄 24h (diurno e noturno)</option>
+                        <option value="diurno">☀️ Diurno</option>
+                        <option value="noturno">🌙 Noturno</option>
+                        <option value="hibrido">📅 Híbrido</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="ep-tipo">Pagamento</label>
+                <select id="ep-tipo" class="form-select">
+                    <option value="diaria">💵 Por turno (diária)</option>
+                    <option value="fixo">🧾 Salário fixo (limpeza) + coberturas</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="ep-valor">Valor padrão do turno / cobertura (R$)</label>
+                <input type="text" id="ep-valor" class="form-input money" inputmode="decimal" placeholder="0,00">
+            </div>
+            <div class="form-group" id="ep-fixos-group">
+                <label class="form-label" for="ep-fixos">Funcionários fixos (um por linha: Nome ; salário)</label>
+                <textarea id="ep-fixos" class="form-input" rows="4" placeholder="Neide ; 1800,00&#10;Nay ; 1800,00"></textarea>
+            </div>
+            <div class="entry-actions">
+                <button id="ep-delete" class="btn-danger btn-inline">🗑️ Excluir posto</button>
+                <button id="ep-save" class="btn-primary btn-inline">✅ Salvar posto</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="confirm-overlay" class="modal-overlay">
+        <div class="confirm-box">
+            <p id="confirm-message" class="confirm-message">Tem certeza?</p>
+            <div class="confirm-actions">
+                <button id="confirm-no" class="btn-secondary">Cancelar</button>
+                <button id="confirm-yes" class="btn-danger">Confirmar</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
