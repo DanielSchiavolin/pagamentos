@@ -116,6 +116,10 @@
                 <input type="text" id="entry-qra" class="form-input" list="qra-names" placeholder="Nome do QRA" autocomplete="off">
                 <datalist id="qra-names"></datalist>
             </div>
+            <div class="form-group" id="entry-cobre-group" style="display: none;">
+                <label class="form-label" for="entry-cobre">Cobrindo a falta de (desconta a diária do salário)</label>
+                <select id="entry-cobre" class="form-select"></select>
+            </div>
             <div class="form-row">
                 <div class="form-group">
                     <label class="form-label" for="entry-valor">Valor do turno (R$)</label>
@@ -137,9 +141,9 @@
                 </div>
             </div>
             <div class="dobra-box">
-                <label class="check-line"><input type="checkbox" id="entry-dobra"> 🔁 Dobra (trabalhou turno colado)</label>
+                <label class="check-line"><input type="checkbox" id="entry-dobra"> 🔁 3/6</label>
                 <div class="form-group" id="entry-36-group">
-                    <label class="form-label" for="entry-36">3/6 — extra pela dobra (R$)</label>
+                    <label class="form-label" for="entry-36">Valor do 3/6 (R$)</label>
                     <input type="text" id="entry-36" class="form-input money" inputmode="decimal" placeholder="0,00">
                 </div>
                 <div id="entry-dobra-hint" class="info-box"></div>

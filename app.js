@@ -6,7 +6,7 @@
 // ============================================================
 
 // Bump together with version.json on every deploy: open apps reload themselves when it changes
-const APP_VERSION = '2026-10-23.2';
+const APP_VERSION = '2026-10-23.3';
 
 const FIREBASE_CONFIG = {
   apiKey: 'AIzaSyB2XpLy5atMeLtc-XuOaAtY9m72mK9dZSY',
@@ -151,7 +151,7 @@ class Ledger {
   }
 
   static toReais(b) {
-    ['valor', 'extra', 'desconto', 'tresSeis', 'total', 'fixo', 'fixos'].forEach(k => { if (typeof b[k] === 'number') b[k] /= 100; });
+    ['valor', 'extra', 'desconto', 'tresSeis', 'total', 'fixo', 'fixos', 'faltas'].forEach(k => { if (typeof b[k] === 'number') b[k] /= 100; });
     return b;
   }
 
@@ -166,8 +166,19 @@ class Ledger {
       const key = normalizeText(e.qra) || '?';
       Ledger.add(sum.qras[key] = sum.qras[key] || Ledger.bucket(e.qra || '(sem nome)'), e);
     });
-    if (post.tipo === 'fixo') sum.fixos = fixosOf(post, ym).reduce((a, f) => a + cents(f.salario), 0);
-    sum.total += sum.fixos;
+    // Limpeza: salary of the month minus the diárias of the coberturas of each one's absences
+    sum.faltas = 0;
+    sum.fixosDet = [];
+    if (post.tipo === 'fixo') {
+      fixosOf(post, ym).forEach(f => {
+        const covered = list.filter(e => e.cobre && normalizeText(e.cobre) === normalizeText(f.nome));
+        const desc = covered.reduce((a, e) => a + cents(e.valor), 0);
+        sum.fixosDet.push({ nome: f.nome, salario: cents(f.salario) / 100, faltas: covered.length, desconto: desc / 100, liquido: (cents(f.salario) - desc) / 100 });
+        sum.fixos += cents(f.salario);
+        sum.faltas += desc;
+      });
+    }
+    sum.total += sum.fixos - sum.faltas;
     sum.dias = sum.dias.size;
     Object.values(sum.qras).forEach(Ledger.toReais);
     return Ledger.toReais(sum);
@@ -186,7 +197,9 @@ class Ledger {
     Object.values(this.posts).filter(p => p.tipo === 'fixo').forEach(p => fixosOf(p, ym).forEach(f => {
       const key = normalizeText(f.nome) || '?';
       const q = out[key] = out[key] || Ledger.bucket(f.nome);
-      q.fixo += cents(f.salario); q.total += cents(f.salario);
+      const desc = Object.values(this.entries).filter(e => e.postId === p.id && monthOf(e.date) === ym && e.cobre
+        && normalizeText(e.cobre) === key).reduce((a, e) => a + cents(e.valor), 0);
+      q.fixo += cents(f.salario) - desc; q.total += cents(f.salario) - desc;
       q.postos.add(p.name);
     }));
     Object.values(out).forEach(Ledger.toReais);
@@ -369,6 +382,7 @@ class PagamentosApp {
         </div>
         <div class="pay-lines">
           ${fixo ? `<div class="pay-line"><span>🧾 Fixos (${fixosOf(p, this.month).length})</span><strong>${brl(sum.fixos)}</strong></div>` : ''}
+          ${fixo && sum.faltas ? `<div class="pay-line"><span>🚫 Faltas descontadas</span><strong class="minus">− ${brl(sum.faltas)}</strong></div>` : ''}
           <div class="pay-line"><span>${fixo ? '🔁 Coberturas' : '📅 Turnos'}: ${sum.turnos} · ${sum.dias} dia(s)</span><strong>${brl(sum.valor)}</strong></div>
           ${sum.extra ? `<div class="pay-line"><span>⏱️ Hora extra</span><strong class="plus">+ ${brl(sum.extra)}</strong></div>` : ''}
           ${sum.desconto ? `<div class="pay-line"><span>⚠️ Descontos</span><strong class="minus">− ${brl(sum.desconto)}</strong></div>` : ''}
@@ -397,7 +411,7 @@ class PagamentosApp {
     const sum = this.ledger.postSummary(p, this.month);
     document.getElementById('post-modal-title').textContent = `${p.name} · ${monthLabel(this.month)}`;
     document.getElementById('post-modal-summary').innerHTML = `
-      ${p.tipo === 'fixo' ? `<div><span>🧾 Fixos</span><b>${brl(sum.fixos)}</b></div>` : ''}
+      ${p.tipo === 'fixo' ? `<div><span>🧾 Fixos</span><b>${brl(sum.fixos)}</b></div><div><span>🚫 Faltas</span><b class="minus">${brl(sum.faltas)}</b></div>` : ''}
       <div><span>${p.tipo === 'fixo' ? '🔁 Coberturas' : '📅 Turnos'}</span><b>${sum.turnos} · ${brl(sum.valor)}</b></div>
       <div><span>⏱️ Extra</span><b class="plus">${brl(sum.extra)}</b></div>
       <div><span>⚠️ Desc.</span><b class="minus">${brl(sum.desconto)}</b></div>
@@ -414,11 +428,11 @@ class PagamentosApp {
       const fixos = fixosOf(p, this.month);
       body.innerHTML = `
         <h3 class="pay-section">🧾 Salário fixo</h3>
-        ${fixos.length ? `<div class="pay-fixos">${fixos.map(f => `<div class="pay-line"><span class="pay-name">${esc(f.nome)}</span><strong>${brl(parseMoney(f.salario))}</strong></div>`).join('')}</div>`
+        ${fixos.length ? `<div class="pay-fixos">${sum.fixosDet.map(f => `<div class="pay-line"><span class="pay-name">${esc(f.nome)}</span><strong>${f.faltas ? `${brl(f.salario)} <span class="minus">− ${brl(f.desconto)} (${f.faltas} falta${f.faltas > 1 ? 's' : ''})</span> = ` : ''}${brl(f.liquido)}</strong></div>`).join('')}</div>`
           : `<div class="muted-text">Nenhum funcionário fixo em ${monthLabel(this.month)}. Use "✏️ Editar posto".</div>`}
         <h3 class="pay-section">🔁 Coberturas no mês</h3>
         <button class="slot-add slot-add-custom" onclick="app.showEntryModal({ postId: '${p.id}', date: '${this.defaultDate()}', turno: 'diurno' })">+ lançar cobertura</button>
-        <div class="pay-cob-list">${entries.length ? entries.map(e => `<div class="pay-day"><span class="pay-day-label">${dayLabel(e.date)} ${SHIFT_LABEL[e.turno].split(' ')[0]}</span>${cell(e)}</div>`).join('') : '<div class="muted-text">Nenhuma cobertura lançada.</div>'}</div>`;
+        <div class="pay-cob-list">${entries.length ? entries.map(e => `<div class="pay-day"><span class="pay-day-label">${dayLabel(e.date)} ${SHIFT_LABEL[e.turno].split(' ')[0]}${e.cobre ? `<br><small class="minus">falta: ${esc(e.cobre)}</small>` : ''}</span>${cell(e)}</div>`).join('') : '<div class="muted-text">Nenhuma cobertura lançada.</div>'}</div>`;
       return;
     }
 
@@ -470,6 +484,12 @@ class PagamentosApp {
     document.getElementById('entry-desconto').value = moneyInput(e ? parseMoney(e.desconto) : 0);
     document.getElementById('entry-obs').value = e ? (e.obs || '') : '';
     document.getElementById('entry-dobra').checked = !!(e && e.dobra);
+    // limpeza: which fixed employee missed (her salary loses the diária of this cobertura)
+    const fixosMes = fixo ? fixosOf(p, monthOf(e ? e.date : date)) : [];
+    document.getElementById('entry-cobre-group').style.display = fixo ? '' : 'none';
+    document.getElementById('entry-cobre').innerHTML = '<option value="">— ninguém (não descontar) —</option>' +
+      fixosMes.map(f => `<option value="${esc(f.nome)}">${esc(f.nome)} (salário ${brl(parseMoney(f.salario))})</option>`).join('');
+    document.getElementById('entry-cobre').value = e ? (e.cobre || '') : (fixosMes.length === 1 ? fixosMes[0].nome : '');
     document.getElementById('entry-36').value = moneyInput(e ? parseMoney(e.tresSeis) : 0);
     document.getElementById('entry-delete').style.display = e ? '' : 'none';
     this.updateEntryForm(true);
@@ -484,14 +504,13 @@ class PagamentosApp {
     const date = document.getElementById('entry-date').value;
     const turno = document.getElementById('entry-turno').value;
     const near = date ? this.ledger.adjacentSameQra(qra, date, turno, id) : [];
-    const dobraBox = document.getElementById('entry-dobra');
-    if (near.length && !skipAutoCheck) dobraBox.checked = true;
+    const dobraBox = document.getElementById('entry-dobra'); // the 3/6 option (manual)
     const hint = document.getElementById('entry-dobra-hint');
     const clash = date ? this.ledger.sameShiftElsewhere(qra, date, turno, id) : [];
     const postName = x => esc((this.ledger.posts[x.postId] || { name: '?' }).name);
     const lines = [];
     if (clash.length) lines.push(`<div class="check-conflict">⛔ ${esc(qra)} já está lançado no MESMO turno (${dayLabel(date)} ${SHIFT_LABEL[turno]}) em ${clash.map(postName).join(', ')}.</div>`);
-    if (near.length) lines.push(`<div class="check-warn">🔁 ${esc(qra)} também trabalhou ${near.map(n => `${dayLabel(n.date)} ${SHIFT_LABEL[n.turno]} em ${postName(n)}`).join(' e ')} — é dobra.</div>`);
+    if (near.length) lines.push(`<div class="check-warn">🔁 ${esc(qra)} também trabalhou ${near.map(n => `${dayLabel(n.date)} ${SHIFT_LABEL[n.turno]} em ${postName(n)}`).join(' e ')} — é dobra. Se tiver 3/6, marque abaixo.</div>`);
     hint.className = lines.length ? 'info-box visible' : 'info-box';
     hint.innerHTML = lines.join('');
     document.getElementById('entry-36-group').style.display = dobraBox.checked ? '' : 'none';
@@ -527,6 +546,7 @@ class PagamentosApp {
       desconto: parseMoney(document.getElementById('entry-desconto').value),
       dobra, tresSeis: dobra ? parseMoney(document.getElementById('entry-36').value) : 0,
       obs: document.getElementById('entry-obs').value.trim(),
+      cobre: document.getElementById('entry-cobre-group').style.display === 'none' ? null : (document.getElementById('entry-cobre').value || null),
       updatedAt: new Date().toISOString(),
     };
     this.hideModal('entry-modal');
@@ -639,15 +659,17 @@ class PagamentosApp {
     const lines = [];
     lines.push(`🏢 *${p.name}* (${p.category})`);
     if (p.tipo === 'fixo') {
-      lines.push(`🧾 Salário fixo: ${brl(s.fixos)}`);
-      fixosOf(p, ym).forEach(f => lines.push(`   • ${f.nome}: ${brl(parseMoney(f.salario))}`));
+      lines.push(`🧾 Salário fixo: ${brl(s.fixos)}${s.faltas ? ` · 🚫 faltas descontadas: ${brl(s.faltas)}` : ''}`);
+      s.fixosDet.forEach(f => lines.push(f.faltas
+        ? `   • ${f.nome}: ${brl(f.salario)} − ${brl(f.desconto)} (${f.faltas} falta(s)) = ${brl(f.liquido)}`
+        : `   • ${f.nome}: ${brl(f.salario)}`));
       lines.push(`🔁 Coberturas: ${s.turnos} (${s.dias} dia(s)) · ${brl(s.valor)}`);
     } else {
       lines.push(`📅 Dias do posto: ${s.dias} · Turnos: ${s.turnos} · Valor: ${brl(s.valor)}`);
     }
     lines.push(`⏱️ Hora extra: ${brl(s.extra)}`);
     lines.push(`⚠️ Descontos: ${brl(s.desconto)}`);
-    lines.push(`🔁 3/6: ${brl(s.tresSeis)} (${s.dobras} dobra(s))`);
+    lines.push(`🔁 3/6: ${brl(s.tresSeis)} (${s.dobras}x)`);
     lines.push(`✅ *Total do posto: ${brl(s.total)}*`);
     const qras = Object.values(s.qras).sort((a, b) => b.total - a.total);
     if (qras.length) {
@@ -675,20 +697,20 @@ class PagamentosApp {
     const tot = posts.reduce((a, p) => {
       const s = this.ledger.postSummary(p, ym);
       ['turnos', 'dobras'].forEach(k => { a[k] += s[k]; });
-      ['valor', 'extra', 'desconto', 'tresSeis', 'fixos', 'total'].forEach(k => { a[k] = (cents(a[k]) + cents(s[k])) / 100; });
+      ['valor', 'extra', 'desconto', 'tresSeis', 'fixos', 'faltas', 'total'].forEach(k => { a[k] = (cents(a[k]) + cents(s[k])) / 100; });
       return a;
-    }, { turnos: 0, valor: 0, extra: 0, desconto: 0, tresSeis: 0, fixos: 0, total: 0, dobras: 0 });
+    }, { turnos: 0, valor: 0, extra: 0, desconto: 0, tresSeis: 0, fixos: 0, faltas: 0, total: 0, dobras: 0 });
     const qras = Object.values(this.ledger.qraSummary(ym)).sort((a, b) => b.total - a.total);
     msg += `📊 *TOTAL GERAL — ${monthLabel(ym)}*\n`;
     msg += `📅 Turnos: ${tot.turnos} · Valor: ${brl(tot.valor)}\n`;
-    if (tot.fixos) msg += `🧾 Salários fixos: ${brl(tot.fixos)}\n`;
-    msg += `⏱️ Hora extra: ${brl(tot.extra)}\n⚠️ Descontos: ${brl(tot.desconto)}\n🔁 3/6: ${brl(tot.tresSeis)} (${tot.dobras} dobra(s))\n`;
+    if (tot.fixos) msg += `🧾 Salários fixos: ${brl(tot.fixos)}${tot.faltas ? ` · 🚫 faltas descontadas: ${brl(tot.faltas)}` : ''}\n`;
+    msg += `⏱️ Hora extra: ${brl(tot.extra)}\n⚠️ Descontos: ${brl(tot.desconto)}\n🔁 3/6: ${brl(tot.tresSeis)} (${tot.dobras}x)\n`;
     msg += `👥 Pessoas: ${qras.length}\n✅ *TOTAL: ${brl(tot.total)}*`;
     if (qras.length) {
       msg += `\n\n👥 *POR PESSOA (todos os postos):*\n` + qras.map(q => {
         const parts = [];
         if (q.turnos) parts.push(`${q.dias.size} dia(s), ${q.turnos} turno(s)`);
-        if (q.fixo) parts.push(`fixo ${brl(q.fixo)}`);
+        if (q.fixo) parts.push(`fixo ${brl(q.fixo)}`); // already minus covered absences
         return `   • ${q.nome}: ${parts.join(' + ')} → ${brl(q.total)}`;
       }).join('\n');
     }
@@ -827,6 +849,7 @@ class PagamentosApp {
     ['entry-qra', 'entry-date', 'entry-turno'].forEach(id => on(id, 'change', () => this.updateEntryForm(false)));
     ['entry-valor', 'entry-extra', 'entry-desconto', 'entry-36'].forEach(id => on(id, 'input', () => this.updateEntryForm(true)));
     on('entry-dobra', 'change', () => this.updateEntryForm(true));
+    on('entry-cobre', 'change', () => this.updateEntryForm(true));
   }
 }
 
