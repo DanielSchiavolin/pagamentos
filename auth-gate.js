@@ -5,7 +5,7 @@
 // A senha NÃO fica no código: ela é conferida pelo Firebase Authentication.
 // ============================================================
 (function () {
-  const TEAM_EMAIL = 'equipe@frontsecurity.app';
+  const TEAM_EMAIL = 'schiavolindaniel@gmail.com';
 
   const ERRORS = {
     'auth/invalid-credential': 'Senha incorreta.',
