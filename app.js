@@ -6,7 +6,7 @@
 // ============================================================
 
 // Bump together with version.json on every deploy: open apps reload themselves when it changes
-const APP_VERSION = '2026-10-23.3';
+const APP_VERSION = '2026-10-25.1';
 
 const FIREBASE_CONFIG = {
   apiKey: 'AIzaSyB2XpLy5atMeLtc-XuOaAtY9m72mK9dZSY',
@@ -242,7 +242,7 @@ class PagamentosApp {
     this.started = true;
     this.setupEventListeners();
     try {
-      firebase.initializeApp(FIREBASE_CONFIG);
+      if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
       this.db = firebase.database();
     } catch (e) {
       this.showToast('Erro ao iniciar o Firebase', 'error');
@@ -858,5 +858,8 @@ if (typeof module !== 'undefined') {
 } else {
   const app = new PagamentosApp();
   window.app = app;
-  document.addEventListener('DOMContentLoaded', () => app.init());
+  // The app starts only after the team password is accepted (auth-gate.js)
+  document.addEventListener('DOMContentLoaded', () => {
+    AuthGate.start(FIREBASE_CONFIG).then(() => app.init());
+  });
 }
