@@ -98,6 +98,7 @@
             <h2 id="entry-modal-title" class="modal-title">Lançamento</h2>
             <input type="hidden" id="entry-id">
             <input type="hidden" id="entry-post">
+            <input type="hidden" id="entry-dia">
             <div class="form-row">
                 <div class="form-group">
                     <label class="form-label" for="entry-date">Dia</label>
@@ -120,8 +121,9 @@
                 <label class="form-label" for="entry-cobre">Cobrindo a falta de (desconta a diária do salário)</label>
                 <select id="entry-cobre" class="form-select"></select>
             </div>
+            <div id="entry-dia-info" class="info-box"></div>
             <div class="form-row">
-                <div class="form-group">
+                <div class="form-group" id="entry-valor-group">
                     <label class="form-label" for="entry-valor">Valor do turno (R$)</label>
                     <input type="text" id="entry-valor" class="form-input money" inputmode="decimal" placeholder="0,00">
                 </div>
@@ -196,6 +198,7 @@
             <div class="form-group" id="ep-fixos-group">
                 <label class="form-label" for="ep-fixos" id="ep-fixos-label">Funcionários fixos (um por linha: Nome ; salário)</label>
                 <textarea id="ep-fixos" class="form-input" rows="4" placeholder="Neide ; 1800,00&#10;Nay ; 1800,00"></textarea>
+                <label class="check-line"><input type="checkbox" id="ep-dividido"> 📅 Salário dividido pelos dias trabalhados (anotar os dias de cada uma)</label>
             </div>
             <div class="entry-actions">
                 <button id="ep-delete" class="btn-danger btn-inline">🗑️ Excluir posto</button>
