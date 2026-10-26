@@ -6,7 +6,7 @@
 // ============================================================
 
 // Bump together with version.json on every deploy: open apps reload themselves when it changes
-const APP_VERSION = '2026-10-26.1';
+const APP_VERSION = '2026-10-26.2';
 
 const FIREBASE_CONFIG = {
   apiKey: 'AIzaSyB2XpLy5atMeLtc-XuOaAtY9m72mK9dZSY',
@@ -114,6 +114,12 @@ function postShifts(post, date) {
   return [];
 }
 
+// What leaves the salary of who missed (in cents). It is its own value because the
+// cobertura may be paid more (urgent day); old launches without it use the cobertura value.
+function faltaCents(e) {
+  return cents(e.descontoFalta !== undefined && e.descontoFalta !== null ? e.descontoFalta : e.valor);
+}
+
 function entryTotal(e) {
   return (cents(e.valor) + cents(e.extra) - cents(e.desconto) + (e.dobra ? cents(e.tresSeis) : 0)) / 100;
 }
@@ -196,7 +202,7 @@ class Ledger {
         [...shares].sort((a, b) => b.rest - a.rest).forEach(pp => { if (left > 0) { pp.parte++; left--; } });
         shares.sort((a, b) => a.nome.localeCompare(b.nome)).forEach(pp => {
           const covered = coveredOf(pp.nome);
-          const desc = covered.reduce((a, e) => a + cents(e.valor), 0);
+          const desc = covered.reduce((a, e) => a + faltaCents(e), 0);
           const extras = pp.extra - pp.desconto + pp.tresSeis;
           sum.fixosDet.push({ nome: pp.nome, dias: pp.dates.size, salario: pp.parte / 100, faltas: covered.length, desconto: desc / 100,
             extra: pp.extra / 100, descAtraso: pp.desconto / 100, tresSeis: pp.tresSeis / 100, liquido: (pp.parte - desc + extras) / 100 });
@@ -206,7 +212,7 @@ class Ledger {
       } else {
         fixosOf(post, ym).forEach(f => {
           const covered = coveredOf(f.nome);
-          const desc = covered.reduce((a, e) => a + cents(e.valor), 0);
+          const desc = covered.reduce((a, e) => a + faltaCents(e), 0);
           sum.fixosDet.push({ nome: f.nome, salario: cents(f.salario) / 100, faltas: covered.length, desconto: desc / 100, liquido: (cents(f.salario) - desc) / 100 });
           sum.faltas += desc;
         });
@@ -482,7 +488,7 @@ class PagamentosApp {
         ${dividido}
         <h3 class="pay-section">🔁 Coberturas no mês</h3>
         <button class="slot-add slot-add-custom" onclick="app.showEntryModal({ postId: '${p.id}', date: '${this.defaultDate()}', turno: 'diurno' })">+ lançar cobertura</button>
-        <div class="pay-cob-list">${cobs.length ? cobs.map(e => `<div class="pay-day"><span class="pay-day-label">${dayLabel(e.date)} ${SHIFT_LABEL[e.turno].split(' ')[0]}${e.cobre ? `<br><small class="minus">falta: ${esc(e.cobre)}</small>` : ''}</span>${cell(e)}</div>`).join('') : '<div class="muted-text">Nenhuma cobertura lançada.</div>'}</div>`;
+        <div class="pay-cob-list">${cobs.length ? cobs.map(e => `<div class="pay-day"><span class="pay-day-label">${dayLabel(e.date)} ${SHIFT_LABEL[e.turno].split(' ')[0]}${e.cobre ? `<br><small class="minus">falta: ${esc(e.cobre)} −${moneyInput(faltaCents(e) / 100)}</small>` : ''}</span>${cell(e)}</div>`).join('') : '<div class="muted-text">Nenhuma cobertura lançada.</div>'}</div>`;
       return;
     }
     body.innerHTML = this.dayGridHtml(p, entries, cell, false);
@@ -557,6 +563,8 @@ class PagamentosApp {
     document.getElementById('entry-cobre').innerHTML = '<option value="">— ninguém (não descontar) —</option>' +
       fixosMes.map(f => `<option value="${esc(f.nome)}">${esc(f.nome)}${parseMoney(f.salario) ? ` (salário ${brl(parseMoney(f.salario))})` : ''}</option>`).join('');
     document.getElementById('entry-cobre').value = e ? (e.cobre || '') : (fixosMes.length === 1 ? fixosMes[0].nome : '');
+    document.getElementById('entry-falta-valor').value = e && e.cobre ? moneyInput(faltaCents(e) / 100)
+      : (parseMoney(p.valorTurno) ? moneyInput(parseMoney(p.valorTurno)) : '');
     document.getElementById('entry-36').value = moneyInput(e ? parseMoney(e.tresSeis) : 0);
     document.getElementById('entry-delete').style.display = e ? '' : 'none';
     this.updateEntryForm(true);
@@ -581,6 +589,8 @@ class PagamentosApp {
     hint.className = lines.length ? 'info-box visible' : 'info-box';
     hint.innerHTML = lines.join('');
     document.getElementById('entry-36-group').style.display = dobraBox.checked ? '' : 'none';
+    document.getElementById('entry-falta-group').style.display =
+      document.getElementById('entry-cobre-group').style.display !== 'none' && document.getElementById('entry-cobre').value ? '' : 'none';
     const e = {
       valor: document.getElementById('entry-dia').value ? 0 : document.getElementById('entry-valor').value, extra: document.getElementById('entry-extra').value,
       desconto: document.getElementById('entry-desconto').value, dobra: dobraBox.checked, tresSeis: document.getElementById('entry-36').value,
@@ -598,6 +608,10 @@ class PagamentosApp {
     const dia = !!document.getElementById('entry-dia').value;
     const money = ['entry-valor', 'entry-extra', 'entry-desconto', 'entry-36'].map(f => parseMoney(document.getElementById(f).value));
     if (dia) money[0] = 0;
+    const cobre = document.getElementById('entry-cobre-group').style.display === 'none' ? null : (document.getElementById('entry-cobre').value || null);
+    const faltaTxt = document.getElementById('entry-falta-valor').value.trim();
+    const descontoFalta = cobre ? (faltaTxt ? parseMoney(faltaTxt) : money[0]) : null;
+    if (descontoFalta !== null && descontoFalta < 0) return this.showToast('O desconto da falta não pode ser negativo', 'error');
     if (money.some(v => v < 0)) return this.showToast('Os valores não podem ser negativos (o atraso já entra como desconto)', 'error');
     const dobra = document.getElementById('entry-dobra').checked;
     const preview = { valor: money[0], extra: money[1], desconto: money[2], dobra, tresSeis: money[3] };
@@ -615,7 +629,7 @@ class PagamentosApp {
       desconto: parseMoney(document.getElementById('entry-desconto').value),
       dobra, tresSeis: dobra ? parseMoney(document.getElementById('entry-36').value) : 0,
       obs: document.getElementById('entry-obs').value.trim(),
-      cobre: document.getElementById('entry-cobre-group').style.display === 'none' ? null : (document.getElementById('entry-cobre').value || null),
+      cobre, descontoFalta,
       updatedAt: new Date().toISOString(),
     };
     this.hideModal('entry-modal');
