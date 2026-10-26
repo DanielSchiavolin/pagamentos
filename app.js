@@ -6,7 +6,7 @@
 // ============================================================
 
 // Bump together with version.json on every deploy: open apps reload themselves when it changes
-const APP_VERSION = '2026-10-26.2';
+const APP_VERSION = '2026-10-26.3';
 
 const FIREBASE_CONFIG = {
   apiKey: 'AIzaSyB2XpLy5atMeLtc-XuOaAtY9m72mK9dZSY',
@@ -67,8 +67,13 @@ function dayLabel(date) {
   return `${DAY_NAMES[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 function normalizeText(s) {
-  return (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
+// Firebase key of a person: the same for "João", "joao" and "JOÃO " → nobody is registered twice
+function pessoaKey(name) {
+  return normalizeText(name).replace(/[.#$\[\]\/]/g, '_') || '_';
+}
+const TIPO_LABEL = { seguranca: '🛡️ Segurança', fx: '🧹 FX' };
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -137,7 +142,12 @@ function fixosOf(post, ym) {
 // ============================================================
 
 class Ledger {
-  constructor() { this.posts = {}; this.entries = {}; }
+  constructor() { this.posts = {}; this.entries = {}; this.vales = {}; }
+
+  valesOf(ym) {
+    return Object.values(this.vales).filter(v => v && v.date && monthOf(v.date) === ym)
+      .sort((a, b) => (a.date + (a.createdAt || '')).localeCompare(b.date + (b.createdAt || '')));
+  }
 
   entriesOf(postId, ym) {
     return Object.values(this.entries).filter(e => e.postId === postId && monthOf(e.date) === ym)
@@ -153,11 +163,11 @@ class Ledger {
   }
 
   static bucket(nome) {
-    return { nome, turnos: 0, dias: new Set(), valor: 0, extra: 0, desconto: 0, tresSeis: 0, dobras: 0, total: 0, postos: new Set(), fixo: 0 };
+    return { nome, turnos: 0, dias: new Set(), valor: 0, extra: 0, desconto: 0, tresSeis: 0, dobras: 0, total: 0, postos: new Set(), fixo: 0, vales: 0, nVales: 0, liquido: 0 };
   }
 
   static toReais(b) {
-    ['valor', 'extra', 'desconto', 'tresSeis', 'total', 'fixo', 'fixos', 'faltas'].forEach(k => { if (typeof b[k] === 'number') b[k] /= 100; });
+    ['valor', 'extra', 'desconto', 'tresSeis', 'total', 'fixo', 'fixos', 'faltas', 'vales', 'liquido'].forEach(k => { if (typeof b[k] === 'number') b[k] /= 100; });
     return b;
   }
 
@@ -246,6 +256,13 @@ class Ledger {
       if (f.dias) q.diasFixo = (q.diasFixo || 0) + f.dias;
       q.postos.add(p.name);
     }));
+    // vales of the month: total stays what the person earned, liquido is what is still to pay
+    this.valesOf(ym).forEach(v => {
+      const key = normalizeText(v.qra) || '?';
+      const q = out[key] = out[key] || Ledger.bucket(v.qra || '(sem nome)');
+      q.vales += cents(v.valor); q.nVales++;
+    });
+    Object.values(out).forEach(q => { q.liquido = q.total - q.vales; });
     Object.values(out).forEach(Ledger.toReais);
     return out;
   }
@@ -275,7 +292,8 @@ class PagamentosApp {
   constructor() {
     this.ledger = new Ledger();
     this.qraNames = [];
-    this.loaded = { posts: false, entries: false };
+    this.pessoas = {};
+    this.loaded = { posts: false, entries: false, vales: false };
     this.month = currentMonth();
     this.openPostId = null;
     this.renderQueued = false;
@@ -304,6 +322,9 @@ class PagamentosApp {
     });
     listen('pagamentos/posts', data => { this.ledger.posts = data; this.loaded.posts = true; this.queueRender(); });
     listen('pagamentos/lancamentos', data => { this.ledger.entries = data; this.loaded.entries = true; this.queueRender(); });
+    listen('pagamentos/vales', data => { this.ledger.vales = data; this.loaded.vales = true; this.queueRender(); });
+    // registered QRAs (Segurança / FX); key = name without case/accents, so no duplicates
+    listen('pagamentos/pessoas', data => { this.pessoas = data; this.fillQraDatalist(); this.queueRender(); });
     // QRA names from the Coberturas app (read only) to suggest who worked
     listen('qras', data => {
       this.qraNames = [...new Set(Object.values(data).map(q => q.name).filter(Boolean))];
@@ -351,9 +372,11 @@ class PagamentosApp {
     this.renderQueued = true;
     setTimeout(() => {
       this.renderQueued = false;
-      if (!this.loaded.posts || !this.loaded.entries) return;
+      if (!this.loaded.posts || !this.loaded.entries || !this.loaded.vales) return;
       this.renderPosts();
       this.renderQras();
+      this.renderVales();
+      if (document.getElementById('people-modal').classList.contains('active')) this.renderPeople();
       this.renderMonthTotal();
       if (this.openPostId) this.renderPostModal();
     });
@@ -522,9 +545,168 @@ class PagamentosApp {
   // ===== Lançamento =====
 
   fillQraDatalist() {
-    const used = Object.values(this.ledger.entries).map(e => e.qra);
-    const names = [...new Set([...this.qraNames, ...used].filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const names = [...this.knownPeople().values()].map(x => x.nome).sort((a, b) => a.localeCompare(b));
     document.getElementById('qra-names').innerHTML = names.map(n => `<option value="${esc(n)}"></option>`).join('');
+  }
+
+  // Everyone the app knows, one per name (ignoring case/accents/spaces). The registry wins;
+  // names only used in launches / Coberturas get the type of where they worked.
+  knownPeople() {
+    const map = new Map();
+    const put = (nome, tipo, cadastrado) => { const k = normalizeText(nome); if (k) map.set(k, { key: pessoaKey(nome), nome: nome.trim(), tipo, cadastrado }); };
+    Object.values(this.ledger.entries).forEach(e => { const p = this.ledger.posts[e.postId]; if (e.qra) put(e.qra, p && p.tipo === 'fixo' ? 'fx' : 'seguranca', false); });
+    Object.values(this.ledger.vales).forEach(v => { if (v && v.qra && !map.has(normalizeText(v.qra))) put(v.qra, 'seguranca', false); });
+    this.qraNames.forEach(n => put(n, 'seguranca', false));
+    Object.values(this.ledger.posts).filter(p => p.tipo === 'fixo').forEach(p => Object.values(p.fixosHist || {}).forEach(l => (l || []).forEach(f => f.nome && put(f.nome, 'fx', false))));
+    Object.values(this.pessoas).forEach(x => { if (x && x.nome) put(x.nome, x.tipo === 'fx' ? 'fx' : 'seguranca', true); });
+    return map;
+  }
+
+  findPerson(name) { return this.knownPeople().get(normalizeText(name)) || null; }
+
+  // Under the QRA field: who it is, or "new QRA → register as Segurança / FX"
+  renderQraInfo(prefix, defaultTipo) {
+    const name = document.getElementById(`${prefix}-qra`).value;
+    const el = document.getElementById(`${prefix}-qra-info`);
+    const old = document.getElementById(`${prefix}-qra-tipo`);
+    const chosen = old ? old.value : defaultTipo;
+    if (!normalizeText(name)) { el.innerHTML = ''; return; }
+    const k = this.findPerson(name);
+    if (k) {
+      el.innerHTML = `<span class="tipo-badge ${k.tipo}">${TIPO_LABEL[k.tipo]}</span>${k.nome !== name.trim() ? ` será salvo como <b>${esc(k.nome)}</b> (já existe)` : ''}`;
+      return;
+    }
+    el.innerHTML = `🆕 QRA novo — será cadastrado como <select id="${prefix}-qra-tipo" class="form-select tipo-select">
+      <option value="seguranca"${chosen === 'seguranca' ? ' selected' : ''}>🛡️ Segurança</option><option value="fx"${chosen === 'fx' ? ' selected' : ''}>🧹 FX</option></select>`;
+  }
+
+  // Returns the name as already known (same spelling everywhere) and registers it if needed.
+  // The transaction only creates: two phones adding the same new name end up with one.
+  ensurePerson(name, tipo) {
+    const k = this.findPerson(name);
+    const nome = k ? k.nome : name.trim().replace(/\s+/g, ' ');
+    if (!k || !k.cadastrado) {
+      const data = { nome, tipo: k ? k.tipo : (tipo === 'fx' ? 'fx' : 'seguranca'), createdAt: new Date().toISOString() };
+      this.pessoas[pessoaKey(nome)] = data; // known at once, before the server answers
+      this.db.ref(`pagamentos/pessoas/${pessoaKey(nome)}`).transaction(cur => cur || data).catch(e => console.warn('pessoa', e));
+    }
+    return nome;
+  }
+
+  showPeople() {
+    document.getElementById('people-new-name').value = '';
+    document.getElementById('people-new-info').innerHTML = '';
+    document.getElementById('people-search').value = '';
+    this.renderPeople();
+    this.showModal('people-modal');
+  }
+
+  renderPeople() {
+    const q = normalizeText(document.getElementById('people-search').value);
+    const all = [...this.knownPeople().values()].filter(x => !q || normalizeText(x.nome).includes(q))
+      .sort((a, b) => a.tipo.localeCompare(b.tipo) || a.nome.localeCompare(b.nome));
+    const count = t => all.filter(x => x.tipo === t).length;
+    document.getElementById('people-list').innerHTML = all.length ? `
+      <div class="muted-text">🛡️ ${count('seguranca')} segurança · 🧹 ${count('fx')} FX</div>` + all.map(x => `
+      <div class="people-row">
+        <span class="pay-name">${esc(x.nome)}${x.cadastrado ? '' : ' <small class="muted-text">(sem cadastro)</small>'}</span>
+        <select class="form-select tipo-select" onchange="app.setPersonTipo('${esc(x.nome).replace(/'/g, '&#39;')}', this.value)">
+          <option value="seguranca"${x.tipo === 'seguranca' ? ' selected' : ''}>🛡️ Segurança</option>
+          <option value="fx"${x.tipo === 'fx' ? ' selected' : ''}>🧹 FX</option>
+        </select>
+      </div>`).join('') : '<div class="empty-state">Ninguém cadastrado.</div>';
+  }
+
+  setPersonTipo(nome, tipo) {
+    const key = pessoaKey(nome);
+    const cur = this.pessoas[key] || { nome, createdAt: new Date().toISOString() };
+    this.write(this.db.ref(`pagamentos/pessoas/${key}`).set({ ...cur, nome: cur.nome || nome, tipo }), `${nome}: ${TIPO_LABEL[tipo]}`);
+  }
+
+  addPerson() {
+    const name = document.getElementById('people-new-name').value.trim();
+    if (!name) return this.showToast('Informe o nome', 'error');
+    const k = this.findPerson(name);
+    if (k) return this.showToast(`⚠️ ${k.nome} já existe (${TIPO_LABEL[k.tipo]}). Não foi duplicado.`, 'error');
+    const nome = this.ensurePerson(name, document.getElementById('people-new-tipo').value);
+    document.getElementById('people-new-name').value = '';
+    document.getElementById('people-new-info').innerHTML = '';
+    this.renderPeople();
+    this.fillQraDatalist();
+    this.showToast(`✅ ${nome} cadastrado`, 'success');
+  }
+
+  // ===== Vales =====
+
+  renderVales() {
+    const vales = this.ledger.valesOf(this.month);
+    document.getElementById('vale-count').textContent = vales.length || '';
+    const ppl = this.ledger.qraSummary(this.month);
+    const totV = vales.reduce((a, v) => a + cents(v.valor), 0);
+    document.getElementById('vale-summary').innerHTML = `
+      <div><span>💸 Vales</span><b class="minus">${brl(totV / 100)}</b></div>
+      <div><span>🧾 Quantidade</span><b>${vales.length}</b></div>
+      <div><span>👥 Pessoas</span><b>${new Set(vales.map(v => normalizeText(v.qra))).size}</b></div>`;
+    const query = normalizeText(document.getElementById('vale-search').value);
+    const groups = {};
+    vales.filter(v => !query || normalizeText(v.qra).includes(query)).forEach(v => { (groups[normalizeText(v.qra)] = groups[normalizeText(v.qra)] || []).push(v); });
+    const el = document.getElementById('vale-list');
+    const keys = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+    if (!keys.length) { el.innerHTML = `<div class="empty-state">${query ? 'Nenhum vale para esse QRA.' : `Nenhum vale em ${monthLabel(this.month)}.`}</div>`; return; }
+    el.innerHTML = keys.map(k => {
+      const q = ppl[k]; const list = groups[k]; const person = this.findPerson(list[0].qra);
+      return `<div class="qra-row vale-card">
+        <div class="qra-main">
+          <div class="qra-name">${esc(q ? q.nome : list[0].qra)} ${person ? `<span class="tipo-badge ${person.tipo}">${TIPO_LABEL[person.tipo]}</span>` : ''}</div>
+          <div class="vale-items">${list.map(v => `<button class="vale-item" onclick="app.showValeModal({ id: '${v.id}' })">${dayLabel(v.date)} · <b>${brl(parseMoney(v.valor))}</b>${v.obs ? ` · ${esc(v.obs)}` : ''}</button>`).join('')}</div>
+          <div class="qra-meta">Ganhou ${brl(q ? q.total : 0)} − vales ${brl(q ? q.vales : 0)}</div>
+          <button class="btn-mini" onclick="app.showValeModal({ qra: '${esc(list[0].qra).replace(/'/g, '&#39;')}' })">＋ outro vale</button>
+        </div>
+        <div class="qra-total${q && q.liquido < 0 ? ' negative' : ''}">${brl(q ? q.liquido : 0)}<small>a receber</small></div>
+      </div>`;
+    }).join('');
+  }
+
+  showValeModal({ id, qra } = {}) {
+    const v = id ? this.ledger.vales[id] : null;
+    document.getElementById('vale-modal-title').textContent = v ? '✏️ Editar vale' : '💸 Novo vale';
+    document.getElementById('vale-id').value = v ? v.id : '';
+    document.getElementById('vale-qra').value = v ? v.qra : (qra || '');
+    document.getElementById('vale-date').value = v ? v.date : this.defaultDate();
+    document.getElementById('vale-valor').value = v ? moneyInput(parseMoney(v.valor)) : '';
+    document.getElementById('vale-obs').value = v ? (v.obs || '') : '';
+    document.getElementById('vale-delete').style.display = v ? '' : 'none';
+    document.getElementById('vale-qra-info').innerHTML = '';
+    this.fillQraDatalist();
+    this.renderQraInfo('vale', 'seguranca');
+    this.showModal('vale-modal');
+    if (!v) setTimeout(() => document.getElementById(qra ? 'vale-valor' : 'vale-qra').focus(), 60);
+  }
+
+  async saveVale() {
+    const raw = document.getElementById('vale-qra').value.trim();
+    const date = document.getElementById('vale-date').value;
+    const valor = parseMoney(document.getElementById('vale-valor').value);
+    if (!raw) return this.showToast('Informe o QRA que recebeu', 'error');
+    if (!date) return this.showToast('Informe o dia do vale', 'error');
+    if (!(valor > 0)) return this.showToast('Informe o valor do vale', 'error');
+    const tipoSel = document.getElementById('vale-qra-tipo');
+    const qra = this.ensurePerson(raw, tipoSel ? tipoSel.value : 'seguranca');
+    const old = this.ledger.vales[document.getElementById('vale-id').value];
+    const id = old ? old.id : makeId('vale');
+    const vale = { id, qra, date, valor, obs: document.getElementById('vale-obs').value.trim(), createdAt: old ? (old.createdAt || null) : new Date().toISOString(), updatedAt: new Date().toISOString() };
+    this.hideModal('vale-modal');
+    if (monthOf(date) !== this.month) this.showToast(`O vale é de ${monthLabel(monthOf(date))} e entra na conta daquele mês`, 'info');
+    await this.write(this.db.ref(`pagamentos/vales/${id}`).set(vale), `💸 Vale de ${brl(valor)} para ${qra}`);
+  }
+
+  deleteVale() {
+    const v = this.ledger.vales[document.getElementById('vale-id').value];
+    if (!v) return;
+    this.confirm(`Excluir o vale de ${brl(parseMoney(v.valor))} de ${v.qra} (${dayLabel(v.date)})?`, () => {
+      this.hideModal('vale-modal');
+      this.write(this.db.ref(`pagamentos/vales/${v.id}`).remove(), 'Vale excluído');
+    });
   }
 
   showEntryModal({ id, postId, date, turno, dia } = {}) {
@@ -578,6 +760,8 @@ class PagamentosApp {
     const qra = document.getElementById('entry-qra').value.trim();
     const date = document.getElementById('entry-date').value;
     const turno = document.getElementById('entry-turno').value;
+    const postE = this.ledger.posts[document.getElementById('entry-post').value];
+    this.renderQraInfo('entry', postE && postE.tipo === 'fixo' ? 'fx' : 'seguranca');
     const near = date ? this.ledger.adjacentSameQra(qra, date, turno, id) : [];
     const dobraBox = document.getElementById('entry-dobra'); // the 3/6 option (manual)
     const hint = document.getElementById('entry-dobra-hint');
@@ -602,9 +786,11 @@ class PagamentosApp {
     const id = document.getElementById('entry-id').value || makeId('lanc');
     const postId = document.getElementById('entry-post').value;
     const date = document.getElementById('entry-date').value;
-    const qra = document.getElementById('entry-qra').value.trim();
+    const rawQra = document.getElementById('entry-qra').value.trim();
     if (!date) return this.showToast('Informe o dia', 'error');
-    if (!qra) return this.showToast('Informe o QRA que trabalhou', 'error');
+    if (!rawQra) return this.showToast('Informe o QRA que trabalhou', 'error');
+    const known = this.findPerson(rawQra);
+    const qra = known ? known.nome : rawQra.replace(/\s+/g, ' ');
     const dia = !!document.getElementById('entry-dia').value;
     const money = ['entry-valor', 'entry-extra', 'entry-desconto', 'entry-36'].map(f => parseMoney(document.getElementById(f).value));
     if (dia) money[0] = 0;
@@ -622,6 +808,9 @@ class PagamentosApp {
       if (!dia && entryTotal(preview) < 0) problems.push(`o total do lançamento fica negativo (${brl(entryTotal(preview))})`);
       if (problems.length) return this.confirm(`Atenção: ${problems.join(' e ')}. Salvar mesmo assim?`, () => this.saveEntry(true));
     }
+    const tipoSel = document.getElementById('entry-qra-tipo');
+    const postS = this.ledger.posts[postId];
+    this.ensurePerson(qra, tipoSel ? tipoSel.value : (postS && postS.tipo === 'fixo' ? 'fx' : 'seguranca'));
     const entry = {
       id, postId, date, turno: document.getElementById('entry-turno').value, qra,
       valor: money[0], dia: dia || null,
@@ -680,7 +869,8 @@ class PagamentosApp {
     const tipo = document.getElementById('ep-tipo').value;
     const fixos = document.getElementById('ep-fixos').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
       const [nome, sal] = l.split(';');
-      return { nome: (nome || '').trim(), salario: parseMoney(sal) };
+      const k = this.findPerson(nome || '');
+      return { nome: k ? k.nome : (nome || '').trim().replace(/\s+/g, ' '), salario: parseMoney(sal) };
     }).filter(f => f.nome);
     if (fixos.some(f => f.salario < 0)) return this.showToast('Salário não pode ser negativo', 'error');
     const hist = { ...((old && old.fixosHist) || {}) };
@@ -698,6 +888,7 @@ class PagamentosApp {
       fixosHist: tipo === 'fixo' ? hist : null,
       dividido: tipo === 'fixo' && document.getElementById('ep-dividido').checked ? true : null,
     };
+    if (tipo === 'fixo') fixos.forEach(f => this.ensurePerson(f.nome, 'fx'));
     this.hideModal('edit-post-modal');
     await this.write(this.db.ref(`pagamentos/posts/${id}`).set(post), `Posto ${name} salvo`);
   }
@@ -729,11 +920,12 @@ class PagamentosApp {
     el.innerHTML = list.map(q => `
       <div class="qra-row">
         <div class="qra-main">
-          <div class="qra-name">${esc(q.nome)}</div>
-          <div class="qra-meta">🏢 ${esc([...q.postos].join(' · '))}</div>
+          <div class="qra-name">${esc(q.nome)} ${(k => k ? `<span class="tipo-badge ${k.tipo}">${TIPO_LABEL[k.tipo]}</span>` : '')(this.findPerson(q.nome))}</div>
+          <div class="qra-meta">🏢 ${esc([...q.postos].join(' · ') || '—')}</div>
           <div class="qra-next">${q.turnos ? `📅 ${q.turnos} turno(s) · ${q.dias.size} dia(s) · 💵 ${brl(q.valor)}` : ''}${q.fixo ? `${q.turnos ? ' · ' : ''}🧾 ${q.diasFixo ? `${q.diasFixo} dia(s) · ` : ''}fixo ${brl(q.fixo)}` : ''}${q.extra ? ` · ⏱️ +${brl(q.extra)}` : ''}${q.desconto ? ` · ⚠️ −${brl(q.desconto)}` : ''}${q.tresSeis ? ` · 🔁 3/6 +${brl(q.tresSeis)}` : ''}</div>
+          ${q.vales ? `<div class="qra-folgas">💸 ${q.nVales} vale(s) −${brl(q.vales)} · ganhou ${brl(q.total)}</div>` : ''}
         </div>
-        <div class="qra-total">${brl(q.total)}</div>
+        <div class="qra-total${q.liquido < 0 ? ' negative' : ''}">${brl(q.liquido)}${q.vales ? '<small>a receber</small>' : ''}</div>
       </div>`).join('');
   }
 
@@ -794,14 +986,22 @@ class PagamentosApp {
     msg += `📅 Turnos: ${tot.turnos} · Valor: ${brl(tot.valor)}\n`;
     if (tot.fixos) msg += `🧾 Salários fixos: ${brl(tot.fixos)}${tot.faltas ? ` · 🚫 faltas descontadas: ${brl(tot.faltas)}` : ''}\n`;
     msg += `⏱️ Hora extra: ${brl(tot.extra)}\n⚠️ Descontos: ${brl(tot.desconto)}\n🔁 3/6: ${brl(tot.tresSeis)} (${tot.dobras}x)\n`;
+    const vales = qras.reduce((a, q) => a + cents(q.vales), 0), nVales = qras.reduce((a, q) => a + q.nVales, 0);
     msg += `👥 Pessoas: ${qras.length}\n✅ *TOTAL: ${brl(tot.total)}*`;
+    if (vales) msg += `\n💸 Vales: −${brl(vales / 100)} (${nVales})\n💵 *A PAGAR (total − vales): ${brl((cents(tot.total) - vales) / 100)}*`;
     if (qras.length) {
-      msg += `\n\n👥 *POR PESSOA (todos os postos):*\n` + qras.map(q => {
+      const line = q => {
         const parts = [];
         if (q.turnos) parts.push(`${q.dias.size} dia(s), ${q.turnos} turno(s)`);
         if (q.fixo) parts.push(`fixo${q.diasFixo ? ` (${q.diasFixo} dia(s))` : ''} ${brl(q.fixo)}`); // already minus covered absences
-        return `   • ${q.nome}: ${parts.join(' + ')} → ${brl(q.total)}`;
-      }).join('\n');
+        return `   • ${q.nome}: ${parts.join(' + ') || 'sem lançamentos'} → ${brl(q.total)}${q.vales ? ` − vale(s) ${brl(q.vales)} = *${brl(q.liquido)}*` : ''}`;
+      };
+      const tipoOf = q => (this.findPerson(q.nome) || { tipo: 'seguranca' }).tipo;
+      msg += `\n\n👥 *POR PESSOA (todos os postos):*`;
+      ['seguranca', 'fx'].forEach(t => {
+        const g = qras.filter(q => tipoOf(q) === t);
+        if (g.length) msg += `\n${TIPO_LABEL[t]} (${g.length}):\n` + g.map(line).join('\n');
+      });
     }
     return msg;
   }
@@ -924,6 +1124,19 @@ class PagamentosApp {
     on('month-current', 'click', () => this.setMonth(currentMonth()));
     on('post-search', 'input', () => this.renderPosts());
     on('qra-search', 'input', () => this.renderQras());
+    on('vale-search', 'input', () => this.renderVales());
+    on('add-vale-btn', 'click', () => this.showValeModal({}));
+    on('vale-save', 'click', () => this.saveVale());
+    on('vale-delete', 'click', () => this.deleteVale());
+    on('vale-qra', 'input', () => this.renderQraInfo('vale', 'seguranca'));
+    on('people-btn', 'click', () => this.showPeople());
+    on('people-add', 'click', () => this.addPerson());
+    on('people-search', 'input', () => this.renderPeople());
+    on('people-new-name', 'input', () => {
+      const k = this.findPerson(document.getElementById('people-new-name').value);
+      document.getElementById('people-new-info').innerHTML = k ? `⚠️ Já existe: <b>${esc(k.nome)}</b> (${TIPO_LABEL[k.tipo]})` : '';
+    });
+    on('entry-qra', 'input', () => this.updateEntryForm(true));
     on('add-post-btn', 'click', () => this.showEditPost(null));
     on('export-all-btn', 'click', () => this.exportAll());
     on('post-export-btn', 'click', () => this.exportPost(this.openPostId));

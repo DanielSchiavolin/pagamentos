@@ -136,3 +136,18 @@
 .export-preview { font-family: ui-monospace, Consolas, monospace; font-size: 0.78rem; line-height: 1.35; white-space: pre; resize: vertical; margin-bottom: 10px; }
 .export-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .export-buttons .btn-inline { flex: 1 1 160px; }
+
+/* ===== QRA registry / vales ===== */
+.qra-info { font-size: .82rem; margin-top: 6px; color: rgba(255,255,255,.8); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.qra-info:empty { display: none; }
+.tipo-badge { display: inline-block; font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; vertical-align: middle; }
+.tipo-badge.seguranca { background: rgba(93,173,226,.18); color: #85C1E9; }
+.tipo-badge.fx { background: rgba(88,214,141,.18); color: #58D68D; }
+.tipo-select { width: auto; padding: 4px 8px; font-size: .82rem; }
+.people-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+.people-search { margin: 14px 0 8px; }
+.vale-items { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.vale-item { background: rgba(231,76,60,.12); border: 1px solid rgba(231,76,60,.35); color: #fff; border-radius: 8px; padding: 4px 8px; font-size: .8rem; cursor: pointer; }
+.qra-total small { display: block; font-size: .65rem; font-weight: 600; color: rgba(255,255,255,.6); text-align: right; }
+.qra-total.negative { color: #EC7063; }
+#vale-summary { margin-bottom: 12px; }

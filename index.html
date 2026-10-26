@@ -50,6 +50,7 @@
         <nav class="view-tabs" role="tablist">
             <button class="view-tab active" data-view="postos" role="tab">🏢 Postos</button>
             <button class="view-tab" data-view="qras" role="tab">👥 QRAs <span id="qra-count" class="tab-count"></span></button>
+            <button class="view-tab" data-view="vales" role="tab">💸 Vales <span id="vale-count" class="tab-count"></span></button>
         </nav>
 
         <section id="view-postos" class="view active">
@@ -67,8 +68,18 @@
         <section id="view-qras" class="view">
             <div class="toolbar">
                 <input type="search" id="qra-search" class="form-input" placeholder="🔎 Buscar QRA...">
+                <button id="people-btn" class="btn-mini">📇 Cadastro de QRAs</button>
             </div>
             <div id="qra-list"></div>
+        </section>
+
+        <section id="view-vales" class="view">
+            <div class="toolbar">
+                <input type="search" id="vale-search" class="form-input" placeholder="🔎 Buscar QRA...">
+                <button id="add-vale-btn" class="btn-mini btn-mini-cover">＋ Novo vale</button>
+            </div>
+            <div id="vale-summary" class="pay-summary"></div>
+            <div id="vale-list"></div>
         </section>
     </main>
 
@@ -116,6 +127,7 @@
                 <label class="form-label" for="entry-qra">QRA que trabalhou</label>
                 <input type="text" id="entry-qra" class="form-input" list="qra-names" placeholder="Nome do QRA" autocomplete="off">
                 <datalist id="qra-names"></datalist>
+                <div id="entry-qra-info" class="qra-info"></div>
             </div>
             <div class="form-group" id="entry-cobre-group" style="display: none;">
                 <label class="form-label" for="entry-cobre">Cobrindo a falta de (desconta a diária do salário)</label>
@@ -208,6 +220,63 @@
                 <button id="ep-delete" class="btn-danger btn-inline">🗑️ Excluir posto</button>
                 <button id="ep-save" class="btn-primary btn-inline">✅ Salvar posto</button>
             </div>
+        </div>
+    </div>
+
+    <!-- ===== VALE ===== -->
+    <div id="vale-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close" data-close="vale-modal" aria-label="Fechar">✕</button>
+            <h2 id="vale-modal-title" class="modal-title">💸 Vale</h2>
+            <input type="hidden" id="vale-id">
+            <div class="form-group">
+                <label class="form-label" for="vale-qra">QRA que recebeu o vale</label>
+                <input type="text" id="vale-qra" class="form-input" list="qra-names" placeholder="Nome do QRA" autocomplete="off">
+                <div id="vale-qra-info" class="qra-info"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="vale-date">Dia do vale</label>
+                    <input type="date" id="vale-date" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="vale-valor">Valor (R$)</label>
+                    <input type="text" id="vale-valor" class="form-input money" inputmode="decimal" placeholder="0,00">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="vale-obs">Observação</label>
+                <input type="text" id="vale-obs" class="form-input" placeholder="Ex: adiantamento, pix">
+            </div>
+            <div class="entry-actions">
+                <button id="vale-delete" class="btn-danger btn-inline">🗑️ Excluir</button>
+                <button id="vale-save" class="btn-primary btn-inline">✅ Salvar vale</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== CADASTRO DE QRAs ===== -->
+    <div id="people-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="modal-close" data-close="people-modal" aria-label="Fechar">✕</button>
+            <h2 class="modal-title">📇 Cadastro de QRAs</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="people-new-name">Novo QRA</label>
+                    <input type="text" id="people-new-name" class="form-input" placeholder="Nome" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="people-new-tipo">Tipo</label>
+                    <select id="people-new-tipo" class="form-select">
+                        <option value="seguranca">🛡️ Segurança</option>
+                        <option value="fx">🧹 FX</option>
+                    </select>
+                </div>
+            </div>
+            <div id="people-new-info" class="qra-info"></div>
+            <button id="people-add" class="btn-primary btn-inline">➕ Cadastrar</button>
+            <input type="search" id="people-search" class="form-input people-search" placeholder="🔎 Buscar no cadastro...">
+            <div id="people-list"></div>
         </div>
     </div>
 
